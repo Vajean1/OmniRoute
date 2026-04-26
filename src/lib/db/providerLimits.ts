@@ -18,12 +18,31 @@ interface KeyValueRow {
   value: string;
 }
 
+interface WindowConsumptionValue {
+  windowHours?: number;
+  since?: string;
+  until?: string;
+  requestCount?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+}
+
+interface ConnectionRollingConsumptionValue {
+  daily?: WindowConsumptionValue;
+  weekly?: WindowConsumptionValue;
+}
+
 export interface ProviderLimitsCacheEntry {
   quotas: JsonRecord | null;
   plan: unknown;
   message: string | null;
   fetchedAt: string;
   source?: string | null;
+  consumption?: ConnectionRollingConsumptionValue | null;
 }
 
 const PROVIDER_LIMITS_CACHE_NAMESPACE = "providerLimitsCache";
@@ -48,12 +67,15 @@ function normalizeCacheEntry(value: unknown): ProviderLimitsCacheEntry | null {
     typeof record.fetchedAt === "string" && record.fetchedAt.trim() ? record.fetchedAt : null;
   if (!fetchedAt) return null;
 
+  const consumption = toRecord(record.consumption) as ConnectionRollingConsumptionValue | null;
+
   return {
     quotas: toRecord(record.quotas),
     plan: record.plan ?? null,
     message: typeof record.message === "string" ? record.message : null,
     fetchedAt,
     source: typeof record.source === "string" ? record.source : null,
+    ...(consumption ? { consumption } : {}),
   };
 }
 

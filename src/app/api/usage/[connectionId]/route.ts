@@ -1,4 +1,5 @@
 import { fetchAndPersistProviderLimits } from "@/lib/usage/providerLimits";
+import { getConnectionRollingConsumption } from "@/lib/usage/connectionConsumption";
 
 /**
  * GET /api/usage/[connectionId] - Get live usage data for a specific connection
@@ -10,8 +11,12 @@ export async function GET(
 ) {
   try {
     const { connectionId } = await params;
-    const { usage } = await fetchAndPersistProviderLimits(connectionId, "manual");
-    return Response.json(usage);
+    const { usage, cache } = await fetchAndPersistProviderLimits(connectionId, "manual");
+    const consumption = cache.consumption || getConnectionRollingConsumption(connectionId);
+    return Response.json({
+      ...usage,
+      consumption,
+    });
   } catch (error) {
     const status =
       typeof (error as { status?: unknown })?.status === "number"

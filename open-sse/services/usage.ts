@@ -16,6 +16,7 @@ import {
 } from "../config/providerHeaderProfiles.ts";
 import { safePercentage } from "@/shared/utils/formatting";
 import { fetchBailianQuota, type BailianTripleWindowQuota } from "./bailianQuotaFetcher.ts";
+import { parseCodexUsageWindows } from "./codexUsageWindows.ts";
 import {
   antigravityUserAgent,
   googApiClientHeader,
@@ -1322,85 +1323,47 @@ async function getCodexUsage(accessToken, providerSpecificData: Record<string, u
     }
 
     const data = await response.json();
+    const parsedWindows = parseCodexUsageWindows(data);
 
-    // Parse rate limit info (supports both snake_case and camelCase)
-    const rateLimit = toRecord(getFieldValue(data, "rate_limit", "rateLimit"));
-    const primaryWindow = toRecord(getFieldValue(rateLimit, "primary_window", "primaryWindow"));
-    const secondaryWindow = toRecord(
-      getFieldValue(rateLimit, "secondary_window", "secondaryWindow")
-    );
+    if (!parsedWindows) {
+      return { message: "Codex connected. Unable to parse quota windows." };
+    }
 
-    // Parse reset times (reset_at is Unix timestamp in seconds)
-    const parseWindowReset = (window: unknown) => {
-      const resetAt = toNumber(getFieldValue(window, "reset_at", "resetAt"), 0);
-      const resetAfterSeconds = toNumber(
-        getFieldValue(window, "reset_after_seconds", "resetAfterSeconds"),
-        0
-      );
-      if (resetAt > 0) return parseResetTime(resetAt * 1000);
-      if (resetAfterSeconds > 0) return parseResetTime(Date.now() + resetAfterSeconds * 1000);
-      return null;
-    };
-
-    // Build quota windows
     const quotas: Record<string, UsageQuota> = {};
 
-    // Primary window (5-hour)
-    if (Object.keys(primaryWindow).length > 0) {
-      const usedPercent = toNumber(getFieldValue(primaryWindow, "used_percent", "usedPercent"), 0);
+    if (parsedWindows.session) {
       quotas.session = {
-        used: usedPercent,
+        used: parsedWindows.session.usedPercent,
         total: 100,
-        remaining: 100 - usedPercent,
-        resetAt: parseWindowReset(primaryWindow),
+        remaining: parsedWindows.session.remainingPercent,
+        resetAt: parsedWindows.session.resetAt,
         unlimited: false,
       };
     }
 
-    // Secondary window (weekly)
-    if (Object.keys(secondaryWindow).length > 0) {
-      const usedPercent = toNumber(
-        getFieldValue(secondaryWindow, "used_percent", "usedPercent"),
-        0
-      );
+    if (parsedWindows.weekly) {
       quotas.weekly = {
-        used: usedPercent,
+        used: parsedWindows.weekly.usedPercent,
         total: 100,
-        remaining: 100 - usedPercent,
-        resetAt: parseWindowReset(secondaryWindow),
+        remaining: parsedWindows.weekly.remainingPercent,
+        resetAt: parsedWindows.weekly.resetAt,
         unlimited: false,
       };
     }
 
-    // Code review rate limit (3rd window — differs per plan: Plus/Pro/Team)
-    const codeReviewRateLimit = toRecord(
-      getFieldValue(data, "code_review_rate_limit", "codeReviewRateLimit")
-    );
-    const codeReviewWindow = toRecord(
-      getFieldValue(codeReviewRateLimit, "primary_window", "primaryWindow")
-    );
-
-    // Only include code review quota if the API returned data for it
-    const codeReviewUsedRaw = getFieldValue(codeReviewWindow, "used_percent", "usedPercent");
-    const codeReviewRemainingRaw = getFieldValue(
-      codeReviewWindow,
-      "remaining_count",
-      "remainingCount"
-    );
-    if (codeReviewUsedRaw !== null || codeReviewRemainingRaw !== null) {
-      const codeReviewUsedPercent = toNumber(codeReviewUsedRaw, 0);
+    if (parsedWindows.codeReview) {
       quotas.code_review = {
-        used: codeReviewUsedPercent,
+        used: parsedWindows.codeReview.usedPercent,
         total: 100,
-        remaining: 100 - codeReviewUsedPercent,
-        resetAt: parseWindowReset(codeReviewWindow),
+        remaining: parsedWindows.codeReview.remainingPercent,
+        resetAt: parsedWindows.codeReview.resetAt,
         unlimited: false,
       };
     }
 
     return {
-      plan: String(getFieldValue(data, "plan_type", "planType") || "unknown"),
-      limitReached: Boolean(getFieldValue(rateLimit, "limit_reached", "limitReached")),
+      plan: parsedWindows.plan,
+      limitReached: parsedWindows.limitReached,
       quotas,
     };
   } catch (error) {

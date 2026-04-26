@@ -18,6 +18,7 @@ import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { pickMaskedDisplayValue, pickDisplayValue } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import EmailPrivacyToggle from "@/shared/components/EmailPrivacyToggle";
+import { fmtCompact } from "@/shared/utils/formatting";
 
 const LS_GROUP_BY = "omniroute:limits:groupBy";
 const LS_EXPANDED_GROUPS = "omniroute:limits:expandedGroups";
@@ -78,6 +79,52 @@ function formatCountdown(resetAt) {
   } catch {
     return null;
   }
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getConsumptionSummary(
+  raw: unknown
+): Array<{ label: string; requests: number; tokens: number }> {
+  if (!raw || typeof raw !== "object") return [];
+  const source = raw as Record<string, unknown>;
+  const consumption =
+    source.consumption && typeof source.consumption === "object"
+      ? (source.consumption as Record<string, unknown>)
+      : null;
+  if (!consumption) return [];
+
+  const windows: Array<{ key: "daily" | "weekly"; label: string }> = [
+    { key: "daily", label: "24h" },
+    { key: "weekly", label: "7d" },
+  ];
+
+  return windows
+    .map(({ key, label }) => {
+      const windowData =
+        consumption[key] && typeof consumption[key] === "object"
+          ? (consumption[key] as Record<string, unknown>)
+          : null;
+      if (!windowData) return null;
+
+      const requests = toFiniteNumber(windowData.requestCount);
+      const tokens = toFiniteNumber(windowData.totalTokens);
+      if (requests === null && tokens === null) return null;
+
+      return {
+        label,
+        requests: requests ?? 0,
+        tokens: tokens ?? 0,
+      };
+    })
+    .filter(Boolean) as Array<{ label: string; requests: number; tokens: number }>;
 }
 
 export default function ProviderLimits() {
@@ -527,6 +574,7 @@ export default function ProviderLimits() {
             const tierMeta = tierByConnection[conn.id] || normalizePlanTier(null);
             const resolvedPlan = resolvedPlanByConnection[conn.id];
             const refreshedAt = lastRefreshedAt[conn.id];
+            const consumptionSummary = getConsumptionSummary(quota?.raw);
 
             return (
               <div
@@ -683,6 +731,22 @@ export default function ProviderLimits() {
                     })
                   ) : (
                     <div className="text-xs text-text-muted italic">{t("noQuotaData")}</div>
+                  )}
+
+                  {consumptionSummary.length > 0 && (
+                    <div className="w-full mt-1 pt-1 border-t border-border/70 flex flex-wrap gap-2">
+                      {consumptionSummary.map((entry) => (
+                        <span
+                          key={entry.label}
+                          className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-black/[0.04] dark:bg-white/[0.06] text-text-muted"
+                        >
+                          <strong className="text-text-main">{entry.label}</strong>
+                          <span>{fmtCompact(entry.tokens)} tok</span>
+                          <span>·</span>
+                          <span>{fmtCompact(entry.requests)} req</span>
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
 

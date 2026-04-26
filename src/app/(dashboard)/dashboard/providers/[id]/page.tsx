@@ -1,6 +1,14 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  type KeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { useNotificationStore } from "@/store/notificationStore";
 import PropTypes from "prop-types";
@@ -500,6 +508,7 @@ interface ConnectionRowProps {
   onToggleRateLimit: (enabled?: boolean) => void;
   onToggleCodex5h?: (enabled?: boolean) => void;
   onToggleCodexWeekly?: (enabled?: boolean) => void;
+  onSetCodexThreshold?: (field: "global" | "session" | "weekly", value: number) => void;
   isCcCompatible?: boolean;
   cliproxyapiEnabled?: boolean;
   onToggleCliproxyapiMode?: (enabled?: boolean) => void;
@@ -593,6 +602,44 @@ function normalizeCodexLimitPolicy(policy: unknown): { use5h: boolean; useWeekly
   return {
     use5h: typeof record.use5h === "boolean" ? record.use5h : true,
     useWeekly: typeof record.useWeekly === "boolean" ? record.useWeekly : true,
+  };
+}
+
+function normalizeThresholdPercent(value: unknown, fallback = 90): number {
+  const raw =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number(value)
+        : NaN;
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(1, Math.min(100, Math.round(raw)));
+}
+
+function normalizeCodexLimitThresholds(limitPolicy: unknown): {
+  thresholdPercent: number;
+  sessionThreshold: number;
+  weeklyThreshold: number;
+} {
+  const policyRecord =
+    limitPolicy && typeof limitPolicy === "object" && !Array.isArray(limitPolicy)
+      ? (limitPolicy as Record<string, unknown>)
+      : {};
+  const thresholdPercent = normalizeThresholdPercent(policyRecord.thresholdPercent, 90);
+  const windowThresholds =
+    policyRecord.windowThresholds &&
+    typeof policyRecord.windowThresholds === "object" &&
+    !Array.isArray(policyRecord.windowThresholds)
+      ? (policyRecord.windowThresholds as Record<string, unknown>)
+      : {};
+
+  return {
+    thresholdPercent,
+    sessionThreshold: normalizeThresholdPercent(
+      windowThresholds.session ?? windowThresholds.daily,
+      thresholdPercent
+    ),
+    weeklyThreshold: normalizeThresholdPercent(windowThresholds.weekly, thresholdPercent),
   };
 }
 
@@ -1547,6 +1594,114 @@ export default function ProviderDetailPage() {
     } catch (error) {
       console.error("Error toggling Codex quota policy:", error);
       notify.error("Failed to update Codex limit policy");
+    }
+  };
+
+  const handleSetCodexThreshold = async (
+    connectionId: string,
+    field: "global" | "session" | "weekly",
+    value: number
+  ) => {
+    try {
+      const target = connections.find((connection) => connection.id === connectionId);
+      if (!target) return;
+
+      const providerSpecificData =
+        target.providerSpecificData && typeof target.providerSpecificData === "object"
+          ? target.providerSpecificData
+          : {};
+      const limitPolicy =
+        providerSpecificData.limitPolicy &&
+        typeof providerSpecificData.limitPolicy === "object" &&
+        !Array.isArray(providerSpecificData.limitPolicy)
+          ? (providerSpecificData.limitPolicy as Record<string, unknown>)
+          : {};
+      const existingWindowThresholds =
+        limitPolicy.windowThresholds &&
+        typeof limitPolicy.windowThresholds === "object" &&
+        !Array.isArray(limitPolicy.windowThresholds)
+          ? (limitPolicy.windowThresholds as Record<string, unknown>)
+          : {};
+
+      const baseThreshold = normalizeThresholdPercent(limitPolicy.thresholdPercent, 90);
+      const nextThresholdPercent =
+        field === "global" ? normalizeThresholdPercent(value, baseThreshold) : baseThreshold;
+      const nextWindowThresholds: Record<string, number> = {
+        ...Object.entries(existingWindowThresholds).reduce<Record<string, number>>(
+          (acc, [k, v]) => {
+            acc[k] = normalizeThresholdPercent(v, nextThresholdPercent);
+            return acc;
+          },
+          {}
+        ),
+      };
+
+      if (field === "session") {
+        nextWindowThresholds.session = normalizeThresholdPercent(value, nextThresholdPercent);
+      }
+      if (field === "weekly") {
+        nextWindowThresholds.weekly = normalizeThresholdPercent(value, nextThresholdPercent);
+      }
+      if (field === "global") {
+        if (!("session" in nextWindowThresholds))
+          nextWindowThresholds.session = nextThresholdPercent;
+        if (!("weekly" in nextWindowThresholds)) nextWindowThresholds.weekly = nextThresholdPercent;
+      }
+
+      const windowsFromPolicy = Array.isArray(limitPolicy.windows)
+        ? limitPolicy.windows.filter((window): window is string => typeof window === "string")
+        : [];
+      const normalizedWindows = Array.from(
+        new Set(
+          windowsFromPolicy
+            .map((window) => window.trim().toLowerCase())
+            .filter(Boolean)
+            .concat(["session", "weekly"])
+        )
+      );
+
+      const nextLimitPolicy = {
+        ...limitPolicy,
+        enabled: typeof limitPolicy.enabled === "boolean" ? limitPolicy.enabled : true,
+        thresholdPercent: nextThresholdPercent,
+        windows: normalizedWindows,
+        windowThresholds: nextWindowThresholds,
+      };
+
+      const res = await fetch(`/api/providers/${connectionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerSpecificData: {
+            ...providerSpecificData,
+            limitPolicy: nextLimitPolicy,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        notify.error(data.error || "Failed to update Codex threshold policy");
+        return;
+      }
+
+      setConnections((prev) =>
+        prev.map((connection) =>
+          connection.id === connectionId
+            ? {
+                ...connection,
+                providerSpecificData: {
+                  ...(connection.providerSpecificData || {}),
+                  limitPolicy: nextLimitPolicy,
+                },
+              }
+            : connection
+        )
+      );
+      notify.success("Codex threshold policy updated");
+    } catch (error) {
+      console.error("Error updating Codex threshold policy:", error);
+      notify.error("Failed to update Codex threshold policy");
     }
   };
 
@@ -2780,6 +2935,9 @@ export default function ProviderDetailPage() {
                         onToggleCodexWeekly={(enabled) =>
                           handleToggleCodexLimit(conn.id, "useWeekly", enabled)
                         }
+                        onSetCodexThreshold={(field, value) =>
+                          handleSetCodexThreshold(conn.id, field, value)
+                        }
                         onRetest={() => handleRetestConnection(conn.id)}
                         isRetesting={retestingId === conn.id}
                         onEdit={() => {
@@ -2894,6 +3052,9 @@ export default function ProviderDetailPage() {
                               }
                               onToggleCodexWeekly={(enabled) =>
                                 handleToggleCodexLimit(conn.id, "useWeekly", enabled)
+                              }
+                              onSetCodexThreshold={(field, value) =>
+                                handleSetCodexThreshold(conn.id, field, value)
                               }
                               onRetest={() => handleRetestConnection(conn.id)}
                               isRetesting={retestingId === conn.id}
@@ -4860,6 +5021,7 @@ function ConnectionRow({
   onToggleRateLimit,
   onToggleCodex5h,
   onToggleCodexWeekly,
+  onSetCodexThreshold,
   onToggleCliproxyapiMode,
   onRetest,
   isRetesting,
@@ -4952,6 +5114,57 @@ function ConnectionRow({
   const normalizedCodexPolicy = normalizeCodexLimitPolicy(codexPolicy);
   const codex5hEnabled = normalizedCodexPolicy.use5h;
   const codexWeeklyEnabled = normalizedCodexPolicy.useWeekly;
+  const codexLimitPolicy =
+    connection.providerSpecificData &&
+    typeof connection.providerSpecificData === "object" &&
+    connection.providerSpecificData.limitPolicy &&
+    typeof connection.providerSpecificData.limitPolicy === "object"
+      ? connection.providerSpecificData.limitPolicy
+      : {};
+  const {
+    thresholdPercent: codexGlobalThreshold,
+    sessionThreshold: codexSessionThreshold,
+    weeklyThreshold: codexWeeklyThreshold,
+  } = normalizeCodexLimitThresholds(codexLimitPolicy);
+  const [codexGlobalThresholdDraft, setCodexGlobalThresholdDraft] = useState(
+    String(codexGlobalThreshold)
+  );
+  const [codexSessionThresholdDraft, setCodexSessionThresholdDraft] = useState(
+    String(codexSessionThreshold)
+  );
+  const [codexWeeklyThresholdDraft, setCodexWeeklyThresholdDraft] = useState(
+    String(codexWeeklyThreshold)
+  );
+
+  useEffect(() => {
+    setCodexGlobalThresholdDraft(String(codexGlobalThreshold));
+  }, [codexGlobalThreshold]);
+
+  useEffect(() => {
+    setCodexSessionThresholdDraft(String(codexSessionThreshold));
+  }, [codexSessionThreshold]);
+
+  useEffect(() => {
+    setCodexWeeklyThresholdDraft(String(codexWeeklyThreshold));
+  }, [codexWeeklyThreshold]);
+
+  const commitCodexThreshold = (
+    field: "global" | "session" | "weekly",
+    draftValue: string,
+    currentValue: number,
+    setDraft: (value: string) => void
+  ) => {
+    const normalized = normalizeThresholdPercent(draftValue, currentValue);
+    setDraft(String(normalized));
+    if (normalized === currentValue) return;
+    onSetCodexThreshold?.(field, normalized);
+  };
+
+  const handleThresholdInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    }
+  };
   const cliproxyapiDeepMode = !!cliproxyapiEnabled;
 
   return (
@@ -5090,6 +5303,75 @@ function ConnectionRow({
                   <span className="material-symbols-outlined text-[13px]">date_range</span>
                   Weekly {codexWeeklyEnabled ? "ON" : "OFF"}
                 </button>
+                <span className="inline-flex items-center gap-1 pl-1">
+                  <span className="text-[10px] text-text-muted">Fallback%</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    inputMode="numeric"
+                    value={codexGlobalThresholdDraft}
+                    onChange={(event) => setCodexGlobalThresholdDraft(event.target.value)}
+                    onBlur={() =>
+                      commitCodexThreshold(
+                        "global",
+                        codexGlobalThresholdDraft,
+                        codexGlobalThreshold,
+                        setCodexGlobalThresholdDraft
+                      )
+                    }
+                    onKeyDown={handleThresholdInputKeyDown}
+                    className="w-12 h-6 px-1 rounded bg-transparent border border-border text-[11px] text-text-main"
+                    title="Global quota threshold percent for fallback"
+                    disabled={!onSetCodexThreshold}
+                  />
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-[10px] text-blue-400">5h%</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    inputMode="numeric"
+                    value={codexSessionThresholdDraft}
+                    onChange={(event) => setCodexSessionThresholdDraft(event.target.value)}
+                    onBlur={() =>
+                      commitCodexThreshold(
+                        "session",
+                        codexSessionThresholdDraft,
+                        codexSessionThreshold,
+                        setCodexSessionThresholdDraft
+                      )
+                    }
+                    onKeyDown={handleThresholdInputKeyDown}
+                    className="w-12 h-6 px-1 rounded bg-transparent border border-blue-500/30 text-[11px] text-text-main"
+                    title="5h window threshold percent"
+                    disabled={!onSetCodexThreshold}
+                  />
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-[10px] text-violet-400">7d%</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    inputMode="numeric"
+                    value={codexWeeklyThresholdDraft}
+                    onChange={(event) => setCodexWeeklyThresholdDraft(event.target.value)}
+                    onBlur={() =>
+                      commitCodexThreshold(
+                        "weekly",
+                        codexWeeklyThresholdDraft,
+                        codexWeeklyThreshold,
+                        setCodexWeeklyThresholdDraft
+                      )
+                    }
+                    onKeyDown={handleThresholdInputKeyDown}
+                    className="w-12 h-6 px-1 rounded bg-transparent border border-violet-500/30 text-[11px] text-text-main"
+                    title="Weekly window threshold percent"
+                    disabled={!onSetCodexThreshold}
+                  />
+                </span>
               </>
             )}
             {hasProxy &&
@@ -5252,6 +5534,7 @@ ConnectionRow.propTypes = {
   onToggleRateLimit: PropTypes.func.isRequired,
   onToggleCodex5h: PropTypes.func,
   onToggleCodexWeekly: PropTypes.func,
+  onSetCodexThreshold: PropTypes.func,
   isCcCompatible: PropTypes.bool,
   cliproxyapiEnabled: PropTypes.bool,
   onToggleCliproxyapiMode: PropTypes.func,

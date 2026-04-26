@@ -10,6 +10,9 @@ const MIGRATION_SQL = `
     connection_id TEXT NOT NULL,
     window_key TEXT NOT NULL,
     remaining_percentage REAL,
+    used_percentage REAL,
+    used_amount REAL,
+    total_amount REAL,
     is_exhausted INTEGER DEFAULT 0,
     next_reset_at TEXT,
     window_duration_ms INTEGER,
@@ -33,24 +36,50 @@ interface DbLike {
 
 let lastCleanupAt = 0;
 
-function saveQuotaSnapshotForTest(
-  db: Database.Database,
-  snapshot: Omit<QuotaSnapshotRow, "id" | "created_at">
-): void {
+interface QuotaSnapshotInsertInput {
+  provider: string;
+  connection_id: string;
+  window_key: string;
+  remaining_percentage: number | null;
+  used_percentage?: number | null;
+  used_amount?: number | null;
+  total_amount?: number | null;
+  is_exhausted: number;
+  next_reset_at: string | null;
+  window_duration_ms: number | null;
+  raw_data: string | null;
+}
+
+function saveQuotaSnapshotForTest(db: Database.Database, snapshot: QuotaSnapshotInsertInput): void {
   const now = new Date().toISOString();
 
   (db as unknown as DbLike)
     .prepare(
       `INSERT INTO quota_snapshots
-       (provider, connection_id, window_key, remaining_percentage, is_exhausted,
-        next_reset_at, window_duration_ms, raw_data, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (
+         provider,
+         connection_id,
+         window_key,
+         remaining_percentage,
+         used_percentage,
+         used_amount,
+         total_amount,
+         is_exhausted,
+         next_reset_at,
+         window_duration_ms,
+         raw_data,
+         created_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       snapshot.provider,
       snapshot.connection_id,
       snapshot.window_key,
       snapshot.remaining_percentage,
+      snapshot.used_percentage ?? null,
+      snapshot.used_amount ?? null,
+      snapshot.total_amount ?? null,
       snapshot.is_exhausted,
       snapshot.next_reset_at,
       snapshot.window_duration_ms,

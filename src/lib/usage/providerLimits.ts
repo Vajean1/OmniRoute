@@ -12,6 +12,10 @@ import {
 } from "@/lib/localDb";
 import { syncToCloud } from "@/lib/cloudSync";
 import { setQuotaCache } from "@/domain/quotaCache";
+import {
+  getConnectionRollingConsumption,
+  type ConnectionRollingConsumption,
+} from "./connectionConsumption";
 import { getMachineId } from "@/shared/utils/machine";
 import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
@@ -46,6 +50,7 @@ function isRecord(value: unknown): value is JsonRecord {
 function toProviderLimitsCacheEntry(
   usage: JsonRecord,
   source: SyncSource,
+  consumption: ConnectionRollingConsumption,
   fetchedAt = new Date().toISOString()
 ): ProviderLimitsCacheEntry {
   return {
@@ -54,6 +59,7 @@ function toProviderLimitsCacheEntry(
     message: typeof usage.message === "string" ? usage.message : null,
     fetchedAt,
     source,
+    consumption,
   };
 }
 
@@ -307,7 +313,11 @@ export async function fetchAndPersistProviderLimits(
   cache: ProviderLimitsCacheEntry;
 }> {
   const { connection, usage } = await fetchLiveProviderLimits(connectionId);
-  const cache = toProviderLimitsCacheEntry(usage, source);
+  const cache = toProviderLimitsCacheEntry(
+    usage,
+    source,
+    getConnectionRollingConsumption(connectionId)
+  );
   setProviderLimitsCache(connectionId, cache);
   return { connection, usage, cache };
 }
@@ -337,7 +347,11 @@ export async function syncAllProviderLimits(
     const results = await Promise.allSettled(
       chunk.map(async (connection) => {
         const { usage } = await fetchLiveProviderLimits(connection.id);
-        const cache = toProviderLimitsCacheEntry(usage, source);
+        const cache = toProviderLimitsCacheEntry(
+          usage,
+          source,
+          getConnectionRollingConsumption(connection.id)
+        );
         return { connectionId: connection.id, cache };
       })
     );

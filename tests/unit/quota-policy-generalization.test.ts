@@ -19,6 +19,7 @@ test("resolveQuotaLimitPolicy keeps codex legacy defaults when generic policy is
   assert.equal(policy.enabled, true);
   assert.deepEqual(policy.windows, ["session"]);
   assert.equal(policy.thresholdPercent, 90);
+  assert.deepEqual(policy.windowThresholds, {});
 });
 
 test("resolveQuotaLimitPolicy enforces codex weekly window when weekly toggle is enabled", () => {
@@ -29,6 +30,7 @@ test("resolveQuotaLimitPolicy enforces codex weekly window when weekly toggle is
 
   assert.equal(policy.enabled, true);
   assert.deepEqual(policy.windows.sort(), ["session", "weekly"]);
+  assert.deepEqual(policy.windowThresholds, {});
 });
 
 test("resolveQuotaLimitPolicy removes codex weekly window when weekly toggle is disabled", () => {
@@ -39,12 +41,34 @@ test("resolveQuotaLimitPolicy removes codex weekly window when weekly toggle is 
 
   assert.equal(policy.enabled, true);
   assert.deepEqual(policy.windows, ["session"]);
+  assert.deepEqual(policy.windowThresholds, {});
+});
+
+test("resolveQuotaLimitPolicy normalizes codex windowThresholds and daily aliases", () => {
+  const policy = auth.resolveQuotaLimitPolicy("codex", {
+    codexLimitPolicy: { use5h: true, useWeekly: true },
+    limitPolicy: {
+      windows: ["daily", "weekly"],
+      windowThresholds: {
+        daily: 85,
+        "weekly (7d)": "92",
+        custom: 70,
+      },
+    },
+  });
+
+  assert.deepEqual(policy.windows, ["session", "weekly"]);
+  assert.deepEqual(policy.windowThresholds, {
+    session: 85,
+    weekly: 92,
+  });
 });
 
 test("resolveQuotaLimitPolicy disables non-codex policy by default", () => {
   const policy = auth.resolveQuotaLimitPolicy("openai", {});
   assert.equal(policy.enabled, false);
   assert.deepEqual(policy.windows, []);
+  assert.deepEqual(policy.windowThresholds, {});
 });
 
 test("resolveQuotaLimitPolicy accepts generic provider policy and clamps threshold", () => {
@@ -59,6 +83,7 @@ test("resolveQuotaLimitPolicy accepts generic provider policy and clamps thresho
   assert.equal(policy.enabled, true);
   assert.equal(policy.thresholdPercent, 100);
   assert.deepEqual(policy.windows, ["daily", "monthly"]);
+  assert.deepEqual(policy.windowThresholds, {});
 });
 
 test("evaluateQuotaLimitPolicy blocks when configured window reaches threshold", () => {

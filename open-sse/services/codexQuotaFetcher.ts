@@ -18,6 +18,7 @@
 
 import { registerQuotaFetcher, type QuotaInfo } from "./quotaPreflight.ts";
 import { registerMonitorFetcher } from "./quotaMonitor.ts";
+import { parseCodexUsageWindows } from "./codexUsageWindows.ts";
 
 // Codex usage endpoint (same as usage.ts CODEX_CONFIG)
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -188,66 +189,20 @@ export async function fetchCodexQuota(
   }
 }
 
-// ─── Response Parser ─────────────────────────────────────────────────────────
-
-function toNumber(value: unknown, fallback = 0): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = parseFloat(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return fallback;
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function parseWindowReset(window: Record<string, unknown>): string | null {
-  const resetAt = toNumber(window["reset_at"] ?? window["resetAt"], 0);
-  if (resetAt > 0) {
-    return new Date(resetAt * 1000).toISOString();
-  }
-  const resetAfterSeconds = toNumber(
-    window["reset_after_seconds"] ?? window["resetAfterSeconds"],
-    0
-  );
-  if (resetAfterSeconds > 0) {
-    return new Date(Date.now() + resetAfterSeconds * 1000).toISOString();
-  }
-  return null;
-}
-
 function parseCodexUsageResponse(data: unknown): CodexDualWindowQuota | null {
-  const obj = toRecord(data);
-  const rateLimit = toRecord(obj["rate_limit"] ?? obj["rateLimit"]);
-  const primaryWindow = toRecord(rateLimit["primary_window"] ?? rateLimit["primaryWindow"]);
-  const secondaryWindow = toRecord(rateLimit["secondary_window"] ?? rateLimit["secondaryWindow"]);
+  const parsed = parseCodexUsageWindows(data);
+  if (!parsed) return null;
 
-  // Require at least one window to be present
-  const hasPrimary = Object.keys(primaryWindow).length > 0;
-  const hasSecondary = Object.keys(secondaryWindow).length > 0;
-  if (!hasPrimary && !hasSecondary) return null;
-
-  // Parse 5h window
-  const usedPercent5h = hasPrimary
-    ? toNumber(primaryWindow["used_percent"] ?? primaryWindow["usedPercent"], 0)
-    : 0;
-  const resetAt5h = hasPrimary ? parseWindowReset(primaryWindow) : null;
-
-  // Parse 7d window
-  const usedPercent7d = hasSecondary
-    ? toNumber(secondaryWindow["used_percent"] ?? secondaryWindow["usedPercent"], 0)
-    : 0;
-  const resetAt7d = hasSecondary ? parseWindowReset(secondaryWindow) : null;
+  const usedPercent5h = parsed.session?.usedPercent ?? 0;
+  const resetAt5h = parsed.session?.resetAt ?? null;
+  const usedPercent7d = parsed.weekly?.usedPercent ?? 0;
+  const resetAt7d = parsed.weekly?.resetAt ?? null;
 
   // Worst-case across both windows (triggers switch when EITHER is at 95%)
   const worstPercentUsed = Math.max(usedPercent5h, usedPercent7d);
   const percentUsedNormalized = worstPercentUsed / 100; // QuotaInfo uses 0..1
 
-  const limitReached = Boolean(rateLimit["limit_reached"] ?? rateLimit["limitReached"]);
+  const limitReached = parsed.limitReached;
 
   return {
     used: worstPercentUsed,

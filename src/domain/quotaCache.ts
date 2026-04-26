@@ -23,6 +23,9 @@ import { saveQuotaSnapshot, cleanupOldSnapshots } from "@/lib/db/quotaSnapshots"
 
 interface QuotaInfo {
   remainingPercentage: number;
+  usedPercentage: number;
+  usedAmount: number | null;
+  totalAmount: number | null;
   resetAt: string | null;
 }
 
@@ -102,6 +105,15 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function normalizeWindowKey(value: unknown): string {
   if (typeof value !== "string") return "";
   return value
@@ -159,10 +171,20 @@ function normalizeQuotas(rawQuotas: Record<string, any>): Record<string, QuotaIn
   const result: Record<string, QuotaInfo> = {};
   for (const [key, q] of Object.entries(rawQuotas)) {
     if (q && typeof q === "object") {
+      const usedAmount = toFiniteNumber((q as Record<string, unknown>).used);
+      const totalAmount = toFiniteNumber((q as Record<string, unknown>).total);
+      const fallbackRemaining =
+        totalAmount !== null && totalAmount > 0 && usedAmount !== null
+          ? Math.round(((totalAmount - usedAmount) / totalAmount) * 100)
+          : 0;
+      const remainingPercentage =
+        safePercentage((q as Record<string, unknown>).remainingPercentage) ?? fallbackRemaining;
+
       result[key] = {
-        remainingPercentage:
-          safePercentage(q.remainingPercentage) ??
-          (q.total > 0 ? Math.round(((q.total - (q.used || 0)) / q.total) * 100) : 0),
+        remainingPercentage,
+        usedPercentage: clampPercent(100 - remainingPercentage),
+        usedAmount,
+        totalAmount,
         resetAt: q.resetAt || null,
       };
     }
@@ -200,12 +222,22 @@ export function setQuotaCache(
         (quotaInfo.total > 0
           ? Math.round(((quotaInfo.total - (quotaInfo.used || 0)) / quotaInfo.total) * 100)
           : 0);
+      const usedAmount = toFiniteNumber(quotaInfo.used);
+      const totalAmount = toFiniteNumber(quotaInfo.total);
+      const usedPercentage =
+        safePercentage(quotaInfo.usedPercentage) ??
+        (totalAmount !== null && totalAmount > 0 && usedAmount !== null
+          ? clampPercent((usedAmount / totalAmount) * 100)
+          : clampPercent(100 - remainingPercentage));
       try {
         saveQuotaSnapshot({
           provider,
           connection_id: connectionId,
           window_key: windowKey,
           remaining_percentage: remainingPercentage,
+          used_percentage: usedPercentage,
+          used_amount: usedAmount,
+          total_amount: totalAmount,
           is_exhausted: entry.exhausted ? 1 : 0,
           next_reset_at: quotaInfo.resetAt ?? null,
           window_duration_ms: entry.windowDurationMs ?? null,

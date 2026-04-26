@@ -107,3 +107,73 @@ test("preflightQuota blocks when usage reaches the exhaustion threshold", async 
   assert.equal(infos.length, 1);
   assert.match(infos[0], /switching/i);
 });
+
+test("preflightQuota for codex uses per-window thresholds when dual windows are available", async () => {
+  registerQuotaFetcher("codex", async () => ({
+    used: 91,
+    total: 100,
+    percentUsed: 0.91,
+    window5h: {
+      percentUsed: 0.91,
+      resetAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+    window7d: {
+      percentUsed: 0.6,
+      resetAt: new Date(Date.now() + 300_000).toISOString(),
+    },
+  }));
+
+  const result = await preflightQuota(
+    "codex",
+    "conn-codex-window",
+    createConnection({
+      quotaPreflightEnabled: true,
+      codexLimitPolicy: { use5h: true, useWeekly: true },
+      limitPolicy: {
+        thresholdPercent: 99,
+        windowThresholds: {
+          session: 90,
+          weekly: 95,
+        },
+      },
+    })
+  );
+
+  assert.equal(result.proceed, false);
+  assert.equal(result.reason, "quota_exhausted");
+  assert.equal(result.quotaPercent, 0.91);
+});
+
+test("preflightQuota for codex respects disabled 5h window", async () => {
+  registerQuotaFetcher("codex", async () => ({
+    used: 91,
+    total: 100,
+    percentUsed: 0.91,
+    window5h: {
+      percentUsed: 0.91,
+      resetAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+    window7d: {
+      percentUsed: 0.6,
+      resetAt: new Date(Date.now() + 300_000).toISOString(),
+    },
+  }));
+
+  const result = await preflightQuota(
+    "codex",
+    "conn-codex-toggle",
+    createConnection({
+      quotaPreflightEnabled: true,
+      codexLimitPolicy: { use5h: false, useWeekly: true },
+      limitPolicy: {
+        thresholdPercent: 99,
+        windowThresholds: {
+          weekly: 95,
+        },
+      },
+    })
+  );
+
+  assert.equal(result.proceed, true);
+  assert.equal(result.quotaPercent, 0.6);
+});

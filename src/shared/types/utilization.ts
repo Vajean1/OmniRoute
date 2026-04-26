@@ -4,6 +4,9 @@ export interface QuotaSnapshotRow {
   connection_id: string;
   window_key: string;
   remaining_percentage: number | null;
+  used_percentage: number | null;
+  used_amount: number | null;
+  total_amount: number | null;
   is_exhausted: number;
   next_reset_at: string | null;
   window_duration_ms: number | null;

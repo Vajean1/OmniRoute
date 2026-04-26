@@ -144,6 +144,7 @@ interface QuotaLimitPolicy {
   enabled: boolean;
   thresholdPercent: number;
   windows: string[];
+  windowThresholds: Record<string, number>;
 }
 
 interface QuotaCacheView {
@@ -174,7 +175,14 @@ function uniqueWindows(windows: string[]): string[] {
 function normalizeCodexWindowName(windowName: unknown): string | null {
   if (typeof windowName !== "string") return null;
   const normalized = windowName.trim().toLowerCase();
-  if (normalized === "session (5h)" || normalized === "5h" || normalized === "five_hour") {
+  if (
+    normalized === "session (5h)" ||
+    normalized === "5h" ||
+    normalized === "five_hour" ||
+    normalized === "daily" ||
+    normalized === "daily (24h)" ||
+    normalized === "24h"
+  ) {
     return "session";
   }
   if (normalized === "weekly (7d)" || normalized === "7d" || normalized === "seven_day") {
@@ -199,6 +207,22 @@ function applyCodexWindowPolicy(rawWindows: string[], providerSpecificData: Json
   if (codexPolicy.useWeekly) windows.push("weekly");
 
   return uniqueWindows(windows);
+}
+
+function normalizeWindowThresholdMap(value: unknown, provider: string): Record<string, number> {
+  const source = asRecord(value);
+  const normalized: Record<string, number> = {};
+
+  for (const [rawWindowName, rawThreshold] of Object.entries(source)) {
+    const windowName =
+      provider === "codex"
+        ? normalizeCodexWindowName(rawWindowName)
+        : normalizeWindowName(rawWindowName);
+    if (!windowName) continue;
+    normalized[windowName] = normalizeQuotaThreshold(rawThreshold);
+  }
+
+  return normalized;
 }
 
 function getCodexScopeRateLimitedUntil(
@@ -258,15 +282,24 @@ export function resolveQuotaLimitPolicy(
   const rawPolicy = asRecord(providerSpecificData.limitPolicy);
   const rawWindows = Array.isArray(rawPolicy.windows) ? rawPolicy.windows : [];
   const windows = rawWindows.map(normalizeWindowName).filter(Boolean) as string[];
+  const windowThresholds = normalizeWindowThresholdMap(rawPolicy.windowThresholds, provider);
 
   if (provider === "codex") {
     const defaultWindows = applyCodexWindowPolicy(windows, providerSpecificData);
     const enabled = toBooleanOrDefault(rawPolicy.enabled, defaultWindows.length > 0);
+    const effectiveWindowThresholds: Record<string, number> = {};
+    for (const windowName of defaultWindows) {
+      const customThreshold = windowThresholds[windowName];
+      if (Number.isFinite(customThreshold)) {
+        effectiveWindowThresholds[windowName] = customThreshold;
+      }
+    }
 
     return {
       enabled,
       thresholdPercent: normalizeQuotaThreshold(rawPolicy.thresholdPercent),
       windows: defaultWindows,
+      windowThresholds: effectiveWindowThresholds,
     };
   }
 
@@ -274,6 +307,7 @@ export function resolveQuotaLimitPolicy(
     enabled: toBooleanOrDefault(rawPolicy.enabled, false),
     thresholdPercent: normalizeQuotaThreshold(rawPolicy.thresholdPercent),
     windows,
+    windowThresholds,
   };
 }
 
@@ -290,7 +324,8 @@ export function evaluateQuotaLimitPolicy(
   const resetCandidates: Array<string | null> = [];
 
   for (const windowName of policy.windows) {
-    const status = getQuotaWindowStatus(connection.id, windowName, policy.thresholdPercent);
+    const thresholdPercent = policy.windowThresholds[windowName] ?? policy.thresholdPercent;
+    const status = getQuotaWindowStatus(connection.id, windowName, thresholdPercent);
     if (!status?.reachedThreshold) continue;
     reasons.push(`${windowName} usage ${Math.round(status.usedPercentage)}%`);
     resetCandidates.push(status.resetAt);

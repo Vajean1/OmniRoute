@@ -38,6 +38,10 @@ test("providerLimits cache supports single writes, batch writes and deletions", 
     message: "ok",
     fetchedAt: "2026-01-01T00:00:00.000Z",
     source: "sync",
+    consumption: {
+      daily: { requestCount: 3, totalTokens: 1200 },
+      weekly: { requestCount: 17, totalTokens: 9800 },
+    },
   });
 
   assert.equal(first.plan, "pro");
